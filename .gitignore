@@ -3,3 +3,5 @@
 *.jsonl
 __pycache__
 viz/*
+data/*
+eval/gt/*
