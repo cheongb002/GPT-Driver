@@ -75,6 +75,7 @@ dataset_tokenized = dataset.map(
     # don't need the strings anymore, we have tokens from here on
     remove_columns=["text"]
 )
+dataset_tokenized = dataset_tokenized.train_test_split(test_size=0.1)
 print("dataset tokenized")
 
 # collate function - to transform list of dictionaries [ {input_ids: [123, ..]}, {.. ] to single batch dictionary { input_ids: [..], labels: [..], attention_mask: [..] }
@@ -102,7 +103,7 @@ def collate(elements):
     return batch
 
 
-bs = 2        # batch size
+bs = 14        # batch size
 ga_steps = 1  # gradient acc. steps
 epochs = 5
 steps_per_epoch = len(dataset_tokenized["train"])//(bs*ga_steps)
