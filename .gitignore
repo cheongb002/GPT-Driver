@@ -5,3 +5,4 @@ __pycache__
 viz/*
 data/*
 eval/gt/*
+wandb/*

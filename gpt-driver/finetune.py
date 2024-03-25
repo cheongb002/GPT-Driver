@@ -1,17 +1,27 @@
 import os
 
 import torch
+import wandb
 from datasets import load_from_disk
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from transformers import (AutoModelForCausalLM, AutoTokenizer,
                           BitsAndBytesConfig, QuantoConfig, Trainer,
                           TrainingArguments)
 
+# set the wandb project where this run will be logged
+os.environ["WANDB_PROJECT"]="GPT-Driver"
+
+# save your trained model checkpoint to wandb
+os.environ["WANDB_LOG_MODEL"]="true"
+
+# turn off watch to log faster
+os.environ["WANDB_WATCH"]="false"
+
 dataset = load_from_disk("data/processed")
 print("dataset loaded")
 
 modelpath = "mistralai/Mixtral-8x7B-v0.1"
-quantization_config = QuantoConfig(weights="int8")
+
 bnb_quantization_config = BitsAndBytesConfig(
     load_in_4bit=True,
     bnb_4bit_compute_dtype=torch.bfloat16,
@@ -23,7 +33,6 @@ bnb_quantization_config = BitsAndBytesConfig(
 model = AutoModelForCausalLM.from_pretrained(
     modelpath,
     device_map="auto",
-    # quantization_config=quantization_config,
     quantization_config=bnb_quantization_config,
     torch_dtype=torch.bfloat16,
     offload_buffers=True,
@@ -110,6 +119,7 @@ steps_per_epoch = len(dataset_tokenized["train"])//(bs*ga_steps)
 
 args = TrainingArguments(
     output_dir="out",
+    report_to="wandb",
     per_device_train_batch_size=bs,
     per_device_eval_batch_size=bs,
     evaluation_strategy="steps",

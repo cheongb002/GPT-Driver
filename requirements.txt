@@ -13,6 +13,7 @@ multidict==6.0.4
 ndjson==0.3.1
 numpy==1.26.0
 peft==0.6.0
+quanto
 openai==0.28.0
 regex==2023.8.8
 requests==2.31.0
@@ -24,3 +25,4 @@ torch==2.2.1
 tqdm==4.66.1
 urllib3==2.0.4
 yarl==1.9.2
+wandb
