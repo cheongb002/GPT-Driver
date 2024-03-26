@@ -112,7 +112,7 @@ def collate(elements):
     return batch
 
 
-bs = 12        # batch size
+bs = 14        # batch size
 ga_steps = 1  # gradient acc. steps
 epochs = 5
 steps_per_epoch = len(dataset_tokenized["train"])//(bs*ga_steps)
@@ -124,8 +124,8 @@ args = TrainingArguments(
     per_device_eval_batch_size=bs,
     evaluation_strategy="steps",
     logging_steps=1,
-    eval_steps=500,  # eval and save once per epoch
-    save_steps=500,
+    eval_steps=steps_per_epoch,  # eval and save once per epoch
+    save_steps=steps_per_epoch,
     gradient_accumulation_steps=ga_steps,
     num_train_epochs=epochs,
     lr_scheduler_type="constant",
