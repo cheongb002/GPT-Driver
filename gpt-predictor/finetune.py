@@ -1,148 +1,208 @@
+
+import gc
 import os
 
 import torch
-import wandb
+from accelerate import Accelerator
 from datasets import load_from_disk
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+from peft import LoraConfig, PeftModel
 from transformers import (AutoModelForCausalLM, AutoTokenizer,
-                          BitsAndBytesConfig, QuantoConfig, Trainer,
-                          TrainingArguments)
+                          BitsAndBytesConfig, TrainingArguments, logging,
+                          pipeline)
+from trl import SFTTrainer, setup_chat_format
 
+# The model that you want to train from the Hugging Face hub
+model_name = "mistralai/Mixtral-8x7B-Instruct-v0.1"
+
+# The instruction dataset to use
+dataset_name = "/home/brian/Documents/School/ECE1724/P3/GPT-Driver/data/av2_conversational"
+
+# Fine-tuned model name
+new_model = "Mixtral-Planner-8x7B"
+
+################################################################################
+# QLoRA parameters
+################################################################################
+# LoRA attention dimension
+lora_r = 64
+# Alpha parameter for LoRA scaling
+lora_alpha = 16
+# Dropout probability for LoRA layers
+lora_dropout = 0.1
+################################################################################
+# bitsandbytes parameters
+################################################################################
+# Activate 4-bit precision base model loading
+use_4bit = True
+# Compute dtype for 4-bit base models
+bnb_4bit_compute_dtype = "float16"
+# Quantization type (fp4 or nf4)
+bnb_4bit_quant_type = "nf4"
+# Activate nested quantization for 4-bit base models (double quantization)
+use_nested_quant = True
+################################################################################
+# TrainingArguments parameters
+################################################################################
+# Output directory where the model predictions and checkpoints will be stored
+output_dir = f"./results-{new_model}"
+# Number of training epochs
+num_train_epochs = 5
+# Batch size per GPU for training
+per_device_train_batch_size = 4
+# Batch size per GPU for evaluation
+per_device_eval_batch_size = 4
+# Number of update steps to accumulate the gradients for
+gradient_accumulation_steps = 1
+# Enable gradient checkpointing
+gradient_checkpointing = True
+# Maximum gradient normal (gradient clipping)
+max_grad_norm = 0.3
+# Initial learning rate (AdamW optimizer)
+learning_rate = 5e-4
+# Weight decay to apply to all layers except bias/LayerNorm weights
+weight_decay = 0.01
+# Learning rate schedule
+lr_scheduler_type = "cosine"
+# Number of training steps (overrides num_train_epochs)
+max_steps = -1
+# Ratio of steps for a linear warmup (from 0 to learning rate)
+warmup_ratio = 0.03
+# Group sequences into batches with same length
+# Saves memory and speeds up training considerably
+group_by_length = True
+# Save checkpoint every X updates steps
+save_steps = 1
+# Log every X updates steps
+logging_steps = 1
+################################################################################
+# SFT parameters
+################################################################################
+# Maximum sequence length to use
+max_seq_length = 512
+# Pack multiple short examples in the same input sequence to increase efficiency
+packing = False
+# Load the entire model on the GPU 0
+# device_map = "auto"
+device_map = {"": Accelerator().local_process_index}
+################################################################################
+# WANDB parameters
+################################################################################
 # set the wandb project where this run will be logged
-os.environ["WANDB_PROJECT"]="GPT-Driver"
-
+os.environ["WANDB_PROJECT"] = f"AER1516-{new_model}"
 # save your trained model checkpoint to wandb
-os.environ["WANDB_LOG_MODEL"]="true"
-
+os.environ["WANDB_LOG_MODEL"] = "true"
 # turn off watch to log faster
-os.environ["WANDB_WATCH"]="false"
+os.environ["WANDB_WATCH"] = "false"
+# Load dataset (you can process it here)
+dataset = load_from_disk(dataset_name)
 
-dataset = load_from_disk("data/processed")
-print("dataset loaded")
-
-modelpath = "mistralai/Mixtral-8x7B-v0.1"
-
-bnb_quantization_config = BitsAndBytesConfig(
-    load_in_4bit=True,
-    bnb_4bit_compute_dtype=torch.bfloat16,
-    bnb_4bit_quant_type="nf4",
-    llm_int8_enable_fp32_cpu_offload=True
+compute_dtype = getattr(torch, "float16")
+bnb_config = BitsAndBytesConfig(
+    load_in_4bit=use_4bit,
+    bnb_4bit_quant_type=bnb_4bit_quant_type,
+    bnb_4bit_compute_dtype=compute_dtype,
+    bnb_4bit_use_double_quant=use_nested_quant,
 )
 
-# Load 4-bit quantized model
+# Load base model
 model = AutoModelForCausalLM.from_pretrained(
-    modelpath,
-    device_map="auto",
-    quantization_config=bnb_quantization_config,
-    torch_dtype=torch.bfloat16,
-    offload_buffers=True,
+    model_name,
+    quantization_config=bnb_config,
+    device_map=device_map,
 )
-print("model loaded")
-
-# Load (slow) Tokenizer, fast tokenizer sometimes ignores added tokens
-tokenizer = AutoTokenizer.from_pretrained(modelpath, use_fast=False)
-print("tokenizer loaded")
-
-# Add tokens <|im_start|> and <|im_end|>, latter is special eos token
-tokenizer.pad_token = "</s>"
-tokenizer.add_tokens(["<|im_start|>"])
-tokenizer.add_special_tokens(dict(eos_token="<|im_end|>"))
-model.resize_token_embeddings(len(tokenizer))
-model.config.eos_token_id = tokenizer.eos_token_id
-
-
-# Add LoRA adapters to model
-model = prepare_model_for_kbit_training(model)
-config = LoraConfig(
-    r=64,
-    lora_alpha=16,
-    target_modules=['q_proj', 'k_proj', 'down_proj',
-                    'v_proj', 'gate_proj', 'o_proj', 'up_proj'],
-    lora_dropout=0.1,
-    bias="none",
-    # needed because we added new tokens to tokenizer/model
-    modules_to_save=["lm_head", "embed_tokens"],
-    task_type="CAUSAL_LM"
-)
-model = get_peft_model(model, config)
+LOG.info(f"Model: {model}")
 model.config.use_cache = False
+model.config.pretraining_tp = 1
 
+# Load LLaMA tokenizer
+tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+tokenizer.pad_token = tokenizer.eos_token
+tokenizer.padding_side = "right"  # Fix weird overflow issue with fp16 training
+LOG.info(f"Tokenizer: {tokenizer}")
 
-def tokenize(element):
-    return tokenizer(
-        element["text"],
-        truncation=True,
-        max_length=2048,
-        add_special_tokens=False,
-    )
+# set chat format
+model, tokenizer = setup_chat_format(model, tokenizer)
 
-
-dataset_tokenized = dataset.map(
-    tokenize,
-    batched=True,
-    num_proc=os.cpu_count(),    # multithreaded
-    # don't need the strings anymore, we have tokens from here on
-    remove_columns=["text"]
+# Load LoRA configuration
+peft_config = LoraConfig(
+    lora_alpha=lora_alpha,
+    lora_dropout=lora_dropout,
+    r=lora_r,
+    bias="none",
+    task_type="CAUSAL_LM",
 )
-dataset_tokenized = dataset_tokenized.train_test_split(test_size=0.1)
-print("dataset tokenized")
 
-# collate function - to transform list of dictionaries [ {input_ids: [123, ..]}, {.. ] to single batch dictionary { input_ids: [..], labels: [..], attention_mask: [..] }
-
-
-def collate(elements):
-    tokenlist = [e["input_ids"] for e in elements]
-    tokens_maxlen = max([len(t) for t in tokenlist])  # length of longest input
-
-    input_ids, labels, attention_masks = [], [], []
-    for tokens in tokenlist:
-        # how many pad tokens to add for this sample
-        pad_len = tokens_maxlen-len(tokens)
-
-        # pad input_ids with pad_token, labels with ignore_index (-100) and set attention_mask 1 where content, otherwise 0
-        input_ids.append(tokens + [tokenizer.pad_token_id]*pad_len)
-        labels.append(tokens + [-100]*pad_len)
-        attention_masks.append([1]*len(tokens) + [0]*pad_len)
-
-    batch = {
-        "input_ids": torch.tensor(input_ids),
-        "labels": torch.tensor(labels),
-        "attention_mask": torch.tensor(attention_masks)
-    }
-    return batch
-
-
-bs = 14        # batch size
-ga_steps = 1  # gradient acc. steps
-epochs = 5
-steps_per_epoch = len(dataset_tokenized["train"])//(bs*ga_steps)
-
-args = TrainingArguments(
-    output_dir="out",
-    report_to="wandb",
-    per_device_train_batch_size=bs,
-    per_device_eval_batch_size=bs,
-    evaluation_strategy="steps",
-    logging_steps=1,
-    eval_steps=steps_per_epoch,  # eval and save once per epoch
-    save_steps=steps_per_epoch,
-    gradient_accumulation_steps=ga_steps,
-    num_train_epochs=epochs,
-    lr_scheduler_type="constant",
-    optim="paged_adamw_32bit",
-    learning_rate=0.0002,
-    group_by_length=True,
+# Set training parameters
+training_arguments = TrainingArguments(
+    output_dir=output_dir,
+    num_train_epochs=num_train_epochs,
+    per_device_train_batch_size=per_device_train_batch_size,
+    per_device_eval_batch_size=per_device_eval_batch_size,
+    gradient_accumulation_steps=gradient_accumulation_steps,
+    save_steps=save_steps,
+    save_strategy="epoch",
+    logging_steps=logging_steps,
+    learning_rate=learning_rate,
+    weight_decay=weight_decay,
     fp16=True,
-    ddp_find_unused_parameters=False,    # needed for training with accelerate
+    bf16=False,
+    max_grad_norm=max_grad_norm,
+    max_steps=max_steps,
+    warmup_ratio=warmup_ratio,
+    group_by_length=group_by_length,
+    lr_scheduler_type=lr_scheduler_type,
+    report_to="wandb",
 )
 
-trainer = Trainer(
+# Set supervised fine-tuning parameters
+trainer = SFTTrainer(
     model=model,
+    train_dataset=dataset["train"],
+    eval_dataset=dataset["val"],
     tokenizer=tokenizer,
-    data_collator=collate,
-    train_dataset=dataset_tokenized["train"],
-    eval_dataset=dataset_tokenized["test"],
-    args=args,
+    args=training_arguments,
+    packing=packing,
+    max_seq_length=max_seq_length,
 )
 
+# Train model
 trainer.train()
+# Save trained model
+trainer.model.save_pretrained(new_model)
+trainer.tokenizer.save_pretrained(new_model)
+
+# Ignore warnings
+logging.set_verbosity(logging.CRITICAL)
+
+# Run text generation pipeline with our next model
+prompt = "What is a large language model?"
+pipe = pipeline(task="text-generation", model=model,
+                tokenizer=tokenizer, max_length=200)
+result = pipe(f"<s>[INST] {prompt} [/INST]")
+print(result[0]['generated_text'])
+
+# Empty VRAM
+del model
+del pipe
+del trainer
+
+gc.collect()
+gc.collect()
+
+# Reload model in FP16 and merge it with LoRA weights
+base_model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    low_cpu_mem_usage=True,
+    return_dict=True,
+    torch_dtype=torch.float16,
+    device_map=device_map,
+)
+model = PeftModel.from_pretrained(base_model, new_model)
+model = model.merge_and_unload()
+
+# Reload tokenizer to save it
+tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+tokenizer.pad_token = tokenizer.eos_token
+tokenizer.padding_side = "right"
+model.push_to_hub(new_model, use_temp_dir=False)
+tokenizer.push_to_hub(new_model, use_temp_dir=False)

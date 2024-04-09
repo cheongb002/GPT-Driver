@@ -21,6 +21,7 @@ scipy
 sentencepiece
 tenacity==8.2.3
 tiktoken==0.5.1
+torch_geometric==2.5.2
 torch==2.2.1
 tqdm==4.66.1
 urllib3==2.0.4
