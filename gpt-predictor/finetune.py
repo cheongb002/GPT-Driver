@@ -4,21 +4,22 @@ import os
 
 import torch
 from accelerate import Accelerator
-from datasets import load_from_disk
-from peft import LoraConfig, PeftModel
+from peft import LoraConfig, PeftModel, get_peft_model
 from transformers import (AutoModelForCausalLM, AutoTokenizer,
                           BitsAndBytesConfig, TrainingArguments, logging,
                           pipeline)
 from trl import SFTTrainer, setup_chat_format
 
+from datasets import load_from_disk
+
 # The model that you want to train from the Hugging Face hub
-model_name = "mistralai/Mixtral-8x7B-Instruct-v0.1"
+model_name = "mistralai/Mistral-7B-Instruct-v0.2"
 
 # The instruction dataset to use
-dataset_name = "/home/brian/Documents/School/ECE1724/P3/GPT-Driver/data/av2_conversational"
+dataset_name = "/home/bcheong/Projects/GPT-Driver/data/av2_conversational"
 
 # Fine-tuned model name
-new_model = "Mixtral-Planner-8x7B"
+new_model = "Mistral-Planner-7B"
 
 ################################################################################
 # QLoRA parameters
@@ -39,18 +40,18 @@ bnb_4bit_compute_dtype = "float16"
 # Quantization type (fp4 or nf4)
 bnb_4bit_quant_type = "nf4"
 # Activate nested quantization for 4-bit base models (double quantization)
-use_nested_quant = True
+use_nested_quant = False
 ################################################################################
 # TrainingArguments parameters
 ################################################################################
 # Output directory where the model predictions and checkpoints will be stored
 output_dir = f"./results-{new_model}"
 # Number of training epochs
-num_train_epochs = 5
+num_train_epochs = 1
 # Batch size per GPU for training
-per_device_train_batch_size = 4
+per_device_train_batch_size = 24
 # Batch size per GPU for evaluation
-per_device_eval_batch_size = 4
+per_device_eval_batch_size = 24
 # Number of update steps to accumulate the gradients for
 gradient_accumulation_steps = 1
 # Enable gradient checkpointing
@@ -61,6 +62,8 @@ max_grad_norm = 0.3
 learning_rate = 5e-4
 # Weight decay to apply to all layers except bias/LayerNorm weights
 weight_decay = 0.01
+# Optimizer to use
+optim = "paged_adamw_32bit"
 # Learning rate schedule
 lr_scheduler_type = "cosine"
 # Number of training steps (overrides num_train_epochs)
@@ -71,9 +74,9 @@ warmup_ratio = 0.03
 # Saves memory and speeds up training considerably
 group_by_length = True
 # Save checkpoint every X updates steps
-save_steps = 1
+save_steps = 1000
 # Log every X updates steps
-logging_steps = 1
+logging_steps = 100
 ################################################################################
 # SFT parameters
 ################################################################################
@@ -82,8 +85,7 @@ max_seq_length = 512
 # Pack multiple short examples in the same input sequence to increase efficiency
 packing = False
 # Load the entire model on the GPU 0
-# device_map = "auto"
-device_map = {"": Accelerator().local_process_index}
+device_map = "auto"
 ################################################################################
 # WANDB parameters
 ################################################################################
@@ -96,7 +98,7 @@ os.environ["WANDB_WATCH"] = "false"
 # Load dataset (you can process it here)
 dataset = load_from_disk(dataset_name)
 
-compute_dtype = getattr(torch, "float16")
+compute_dtype = getattr(torch, bnb_4bit_compute_dtype)
 bnb_config = BitsAndBytesConfig(
     load_in_4bit=use_4bit,
     bnb_4bit_quant_type=bnb_4bit_quant_type,
@@ -110,7 +112,7 @@ model = AutoModelForCausalLM.from_pretrained(
     quantization_config=bnb_config,
     device_map=device_map,
 )
-LOG.info(f"Model: {model}")
+print(f"Model: {model}")
 model.config.use_cache = False
 model.config.pretraining_tp = 1
 
@@ -118,7 +120,7 @@ model.config.pretraining_tp = 1
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 tokenizer.pad_token = tokenizer.eos_token
 tokenizer.padding_side = "right"  # Fix weird overflow issue with fp16 training
-LOG.info(f"Tokenizer: {tokenizer}")
+print(f"Tokenizer: {tokenizer}")
 
 # set chat format
 model, tokenizer = setup_chat_format(model, tokenizer)
@@ -135,12 +137,15 @@ peft_config = LoraConfig(
 # Set training parameters
 training_arguments = TrainingArguments(
     output_dir=output_dir,
+    evaluation_strategy="steps",
+    eval_steps=1000,
     num_train_epochs=num_train_epochs,
     per_device_train_batch_size=per_device_train_batch_size,
     per_device_eval_batch_size=per_device_eval_batch_size,
     gradient_accumulation_steps=gradient_accumulation_steps,
+    optim=optim,
     save_steps=save_steps,
-    save_strategy="epoch",
+    save_strategy="steps",
     logging_steps=logging_steps,
     learning_rate=learning_rate,
     weight_decay=weight_decay,
@@ -159,10 +164,11 @@ trainer = SFTTrainer(
     model=model,
     train_dataset=dataset["train"],
     eval_dataset=dataset["val"],
+    peft_config=peft_config,
+    max_seq_length=max_seq_length,
     tokenizer=tokenizer,
     args=training_arguments,
     packing=packing,
-    max_seq_length=max_seq_length,
 )
 
 # Train model

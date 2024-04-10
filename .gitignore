@@ -6,3 +6,4 @@ viz/*
 data/*
 eval/gt/*
 wandb/*
+*/wandb/*
