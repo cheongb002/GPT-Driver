@@ -8,8 +8,7 @@ import tqdm
 from datasets import Dataset, DatasetDict
 from tqdm.contrib.logging import logging_redirect_tqdm
 
-system_message = """
-**Autonomous Driving Planner**
+system_message = """**Autonomous Driving Planner**
 Role: You are the brain of an autonomous vehicle. Plan a safe 6-second driving target. Avoid collisions with other objects.
 
 Context
@@ -50,7 +49,7 @@ def convert_scenario_data(df: pd.DataFrame, past_horizon, fut_horizon) -> List[D
     t_curr = past_horizon
     t_fut = past_horizon + fut_horizon
 
-    user_msg = ""
+    user_msg = system_message + "\n"
     # transform object positions, headings, velocities into AV frame at t_curr
     df_curr = df.loc[df['timestep'] == t_curr]
     agent_ids = list(df_curr['track_id'].unique())
@@ -100,7 +99,7 @@ def convert_scenario_data(df: pd.DataFrame, past_horizon, fut_horizon) -> List[D
         *vel_fut[df_fut['track_id'] == 'AV'][0])
     assistant_msg += "Target heading is {:.2f}\n".format(
         heading_fut[df_fut['track_id'] == 'AV'].values[0])
-    return [{"role": "system", "content": system_message}, {"role": "user", "content": user_msg}, {"role": "assistant", "content": assistant_msg}]
+    return [{"role": "user", "content": user_msg}, {"role": "assistant", "content": assistant_msg}]
 
 
 def process_split(args, split) -> Dataset:
