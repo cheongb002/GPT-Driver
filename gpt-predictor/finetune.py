@@ -3,12 +3,11 @@ import gc
 import os
 
 import torch
-from accelerate import Accelerator
-from peft import LoraConfig, PeftModel, get_peft_model
+from peft import LoraConfig, PeftModel
 from transformers import (AutoModelForCausalLM, AutoTokenizer,
                           BitsAndBytesConfig, TrainingArguments, logging,
                           pipeline)
-from trl import SFTTrainer, setup_chat_format
+from trl import SFTTrainer
 
 from datasets import load_from_disk
 
@@ -16,10 +15,10 @@ from datasets import load_from_disk
 model_name = "mistralai/Mistral-7B-Instruct-v0.2"
 
 # The instruction dataset to use
-dataset_name = "/home/bcheong/Projects/GPT-Driver/data/av2_conversational"
+dataset_name = "/home/bcheong/Projects/GPT-Driver/data/av2_mistral"
 
 # Fine-tuned model name
-new_model = "Mistral-Planner-7B"
+new_model = "Mistral-Planner-7B_new_data"
 
 ################################################################################
 # QLoRA parameters
@@ -122,9 +121,6 @@ tokenizer.pad_token = tokenizer.eos_token
 tokenizer.padding_side = "right"  # Fix weird overflow issue with fp16 training
 print(f"Tokenizer: {tokenizer}")
 
-# set chat format
-model, tokenizer = setup_chat_format(model, tokenizer)
-
 # Load LoRA configuration
 peft_config = LoraConfig(
     lora_alpha=lora_alpha,
@@ -181,11 +177,11 @@ trainer.tokenizer.save_pretrained(new_model)
 logging.set_verbosity(logging.CRITICAL)
 
 # Run text generation pipeline with our next model
-prompt = "What is a large language model?"
+
 pipe = pipeline(task="text-generation", model=model,
-                tokenizer=tokenizer, max_length=200)
-result = pipe(f"<s>[INST] {prompt} [/INST]")
-print(result[0]['generated_text'])
+                tokenizer=tokenizer, max_new_tokens=200)
+result = pipe(dataset["val"][0]["messages"][:1], num_return_sequences=1)
+print(result[0]['generated_text'][1]["content"])
 
 # Empty VRAM
 del model
