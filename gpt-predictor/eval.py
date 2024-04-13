@@ -1,4 +1,6 @@
 import ast
+import os
+import pickle
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -13,11 +15,12 @@ from transformers.pipelines.pt_utils import KeyDataset
 def main():
     # model_name = "cheongb002/Mistral-Planner-7B_new_data"
     # model_name = "mistralai/Mistral-7B-Instruct-v0.2"
-    model_name = "/home/brian/Documents/School/ECE1724/P3/GPT-Driver/results-Mistral-Planner-7B_new_data/checkpoint-4000"
+    model_name = "/home/brian/Documents/School/ECE1724/P3/GPT-Driver/results-Mistral-Planner-7B_new_data/checkpoint-8000"
     dataset_name = "/home/brian/Documents/School/ECE1724/P3/GPT-Driver/data/av2_mistral"
+    # model_name = "/home/brian/Documents/School/ECE1724/P3/GPT-Driver/results-Mistral-Planner-7B_cot/checkpoint-5000"
+    # dataset_name = "/home/brian/Documents/School/ECE1724/P3/GPT-Driver/data/av2_cot"
 
-    dataset = load_from_disk(dataset_name)["val"].shuffle(
-        seed=42).select(range(100))
+    dataset = load_from_disk(dataset_name)["val"]  # .select(range(10))
 
     compute_dtype = getattr(torch, 'float16')
     bnb_config = BitsAndBytesConfig(
@@ -34,7 +37,7 @@ def main():
     tokenizer.padding_side = "right"  # Fix weird overflow issue with fp16 training
 
     generator = pipeline(
-        "text-generation", model=model, tokenizer=tokenizer, batch_size=4)
+        "text-generation", model=model, tokenizer=tokenizer, batch_size=3)
 
     pos_err = []
     vel_err = []
@@ -44,13 +47,16 @@ def main():
     dataset_pruned = dataset_pruned.map(lambda x: {"formatted_chat": tokenizer.apply_chat_template(
         x["messages"], tokenize=False, add_generation_prompt=True)})
     responses = []
-    for response in tqdm.tqdm(generator(KeyDataset(dataset_pruned, key="formatted_chat"), max_new_tokens=64)):
+    for response in tqdm.tqdm(generator(KeyDataset(dataset_pruned, key="formatted_chat"), max_new_tokens=55)):
         response = response[0]["generated_text"]
         responses.append(response)
+    # Save responses to a pickle file
+    with open(os.path.join(model_name, 'responses.pkl'), 'wb') as f:
+        pickle.dump(responses, f)
 
     for i, (data, response) in enumerate(zip(dataset["messages"], responses)):
-        response_split = response.split(
-            "[/INST]")[-1].split("\n")
+        breakpoint()
+        response_split = response.split("[/INST]")[-1].split("\n")
         try:
             pred_target_pos = ast.literal_eval(
                 " ".join(response_split[0].split(" ")[-2:]))
